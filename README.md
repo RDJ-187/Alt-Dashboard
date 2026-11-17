@@ -14,6 +14,7 @@ they contain customer and vehicle details. Run the pipeline locally against your
 ```
 cd insurance-tracker
 python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
+docker compose up -d                      # PostgreSQL (copy .env.example to .env first)
 .venv\Scripts\python run_pipeline.py --root "<folder with policy PDFs>"
 run_dashboard.bat
 ```

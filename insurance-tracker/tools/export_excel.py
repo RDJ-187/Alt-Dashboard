@@ -4,7 +4,6 @@
 """
 import argparse
 import json
-import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
@@ -15,7 +14,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from extractor.db import DB_PATH  # noqa: E402
+from extractor import db  # noqa: E402
 
 BUCKETS = [(0, "Expired"), (7, "Critical (0-7 days)"), (30, "Due in 30 days"), (60, "Upcoming (31-60 days)")]
 
@@ -60,8 +59,8 @@ COLS = [
     ("Own Damage Cover", "Fire Covered", lambda r: r["fire_covered"]),
     ("Own Damage Cover", "Fire Note", lambda r: r["fire_note"]),
     ("Own Damage Cover", "Chassis Damage Covered", lambda r: r["chassis_damage_covered"]),
-    ("Own Damage Cover", "Covered Causes", lambda r: "; ".join(json.loads(r["chassis_damage_causes"] or "[]"))),
-    ("Own Damage Cover", "Add-on Covers", lambda r: ", ".join(json.loads(r["addons"] or "[]"))),
+    ("Own Damage Cover", "Covered Causes", lambda r: "; ".join(_list(r["chassis_damage_causes"]))),
+    ("Own Damage Cover", "Add-on Covers", lambda r: ", ".join(_list(r["addons"]))),
     ("Tracker", "Days to Expiry", lambda r: r["_days"]),
     ("Tracker", "Expiry Status", lambda r: bucket(r["_days"])),
     ("Tracker", "Data Status", lambda r: r["status"]),
@@ -70,7 +69,15 @@ COLS = [
 
 
 def _d(s):
-    return date.fromisoformat(s) if s else None
+    if not s:
+        return None
+    return s if isinstance(s, date) else date.fromisoformat(str(s))
+
+
+def _list(v):
+    if not v:
+        return []
+    return json.loads(v) if isinstance(v, str) else list(v)
 
 
 def _n(s):
@@ -84,11 +91,10 @@ def main():
     a = ap.parse_args()
     today = date.fromisoformat(a.today)
 
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    rows = [dict(r) for r in con.execute("SELECT * FROM vehicles ORDER BY od_end")]
+    con = db.connect(autocommit=True)
+    rows = con.execute("SELECT * FROM vehicles ORDER BY od_end").fetchall()
     for r in rows:
-        r["_days"] = (date.fromisoformat(r["od_end"]) - today).days if r["od_end"] else None
+        r["_days"] = (_d(r["od_end"]) - today).days if r["od_end"] else None
 
     wb = Workbook()
     ws = wb.active
@@ -142,9 +148,9 @@ def main():
     dq.append(["Source File", "Chassis No", "Severity", "Field", "Message"])
     for row in con.execute("""SELECT p.file, p.chassis_no, i.severity, i.field, i.message
                               FROM issues i JOIN policies p ON p.id=i.policy_id ORDER BY i.severity, i.field"""):
-        dq.append(list(row))
-    for row in con.execute("SELECT file, '', 'info', 'duplicate', 'identical copy of ' || duplicate_of FROM duplicates"):
-        dq.append(list(row))
+        dq.append(list(row.values()))
+    for row in con.execute("SELECT file, '' AS c, 'info' AS s, 'duplicate' AS f, 'identical copy of ' || duplicate_of AS m FROM duplicates"):
+        dq.append(list(row.values()))
     for j, w in enumerate([60, 22, 10, 18, 90], 1):
         dq.column_dimensions[get_column_letter(j)].width = w
     for cell in dq[1]:

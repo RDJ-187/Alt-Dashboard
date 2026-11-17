@@ -86,8 +86,28 @@ Opens http://127.0.0.1:8050 (bound to localhost only; no internet access needed,
 | Renewals & alerts | Expired / 0–7 / 8–30 / 31–60 day queues, per-policy renewal status (Not started, In progress, Renewed, Lapsed) |
 | Vehicle register | Searchable, filterable, sortable list of all vehicles; CSV export |
 | Analytics | Expiries by month, expiry calendar, 12-week workload, start dates, city / brand / state / insurer breakdowns |
+| Add policies | Upload PDFs or a whole folder; each is extracted and classified (new vehicle, renewal, older policy, already in system, same policy number, needs attention); nothing is saved until you confirm; imported PDFs are kept in `data/uploads/<date>/` and listed under Recent imports |
 | Vehicle panel | Policy period, fire and chassis-damage cover with covered causes, vehicle and finance details, original PDF, verification trail |
 
 Notifications are in-app (bell). Status is computed live from the OD end date. Renewal tracking and read state
-are stored in `data/dashboard_state.db`, separate from the extraction DB, so re-extraction never loses them;
+live in their own tables (`renewal_tracking`, `alert_reads`) that re-extraction never touches;
 a manual "Renewed" mark applies only to the policy term it was set on.
+
+## Database (PostgreSQL 17 in Docker)
+
+```
+cp .env.example .env               # then set a real password (both lines)
+docker compose up -d               # PostgreSQL on 127.0.0.1:5433 (POSTGRES_PORT), data in the `pgdata` volume
+python run_pipeline.py --root "<pdf folder>"
+```
+
+| Table | Contents |
+|---|---|
+| `policies` | one row per unique PDF; typed columns (DATE, NUMERIC, JSONB, TIMESTAMPTZ) |
+| `field_checks`, `issues` | per-field rules-vs-LLM audit trail, validation findings |
+| `duplicates` | byte-identical PDFs that were skipped |
+| `renewal_tracking`, `alert_reads` | dashboard state |
+| `vehicles` (view) | latest policy per chassis number |
+
+The connection string is `DATABASE_URL` (environment variable or `.env`). The schema is created automatically.
+`tools/migrate_sqlite_to_pg.py` performed the one-time move from the earlier SQLite files and verifies every value.

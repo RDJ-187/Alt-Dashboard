@@ -1,6 +1,6 @@
 """Insurance extraction pipeline.
 
-  python run_pipeline.py --root "<pdf folder>"            rules + validation -> SQLite (seconds)
+  python run_pipeline.py --root "<pdf folder>"            rules + validation -> PostgreSQL (seconds)
   python run_pipeline.py --root "<pdf folder>" --llm      + local LLM cross-check (slow, resumable)
   python run_pipeline.py --root ... --llm --limit 5       try the LLM on a few files first
   python run_pipeline.py --root ... --llm --cache-only    re-score using LLM results already computed
@@ -44,7 +44,8 @@ def main() -> None:
         rec = extract_file(pdf, root)
         sha = rec["sha256"]
         if sha in seen:
-            con.execute("INSERT INTO duplicates VALUES (?,?,?)", (sha, rec["file"], seen[sha]))
+            db.save_duplicate(con, sha, rec["file"], seen[sha])
+            con.commit()
             stats["duplicate_file"] += 1
             continue
         seen[sha] = rec["file"]
@@ -68,11 +69,10 @@ def main() -> None:
         stats[rc["status"]] += 1
         stats["llm_checked" if llm else "rules_only"] += 1
 
-    con.execute("DELETE FROM duplicates WHERE rowid NOT IN (SELECT MIN(rowid) FROM duplicates GROUP BY file)")
-    con.commit()
-    total = con.execute("SELECT COUNT(*) FROM policies").fetchone()[0]
+    total = con.execute("SELECT COUNT(*) AS n FROM policies").fetchone()["n"]
     print(f"\nPDFs scanned: {len(pdfs)}  unique policies in DB: {total}  stats: {dict(stats)}")
-    print(f"Database: {db.DB_PATH.resolve()}")
+    print(f"Database: {db.safe_url()}")
+    con.close()
 
 
 if __name__ == "__main__":

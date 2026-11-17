@@ -101,11 +101,14 @@
     renewals: { title: "Renewals & alerts", icon: "bell", render: renderRenewals },
     vehicles: { title: "Vehicle register", icon: "table", render: renderVehicles },
     analytics: { title: "Analytics", icon: "chart", render: renderAnalytics },
+    import: { title: "Add policies", icon: "upload", render: renderImport, group: "Data" },
   };
 
   function renderShell() {
     const dueSoon = alerts().filter((a) => a.v.bucket === "critical" || a.v.bucket === "due").length;
+    let lastGroup = "Workspace";
     $("#nav").innerHTML = `<div class="nav-label">Workspace</div>` + Object.entries(ROUTES).map(([k, r]) =>
+      (r.group && r.group !== lastGroup ? `<div class="nav-label">${(lastGroup = r.group)}</div>` : "") +
       `<a href="#/${k}" class="${S.route === k ? "active" : ""}" data-route="${k}" title="${r.title}">${icon(r.icon, 17)}<span class="nav-text">${r.title}</span>${k === "renewals" && dueSoon ? `<span class="count" title="Policies ending within 30 days">${dueSoon}</span>` : ""}</a>`).join("");
     $("#asof").innerHTML = `${icon("calendar", 14)}<span>As of ${S.asof.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span>`;
     renderBell();
@@ -168,6 +171,7 @@
       renewals: "Track and action policies approaching or past expiry",
       vehicles: "Every insured vehicle with its current policy",
       analytics: "Expiry patterns by date, city, brand and insurer",
+      import: "Upload new or renewed policy PDFs and add them to the register",
     }[S.route];
     S.charts = [];
     $("#view").innerHTML = ROUTES[S.route].render();
@@ -180,6 +184,7 @@
     if (S.route === "vehicles") updateVehicles();
     if (S.route === "renewals") updateRenewals();
     if (S.route === "analytics") updateAnalytics();
+    if (S.route === "import") updateImport();
   }
 
   function chart(id, fn) { S.charts.push({ id, fn }); return `<div class="chart" id="${id}"></div>`; }
@@ -606,6 +611,215 @@
     drawCharts();
   }
 
+  /* ---------------------------------------------------------------- import */
+  const OUT_STYLE = {
+    new: "var(--s1)", renewal: "var(--st-active)", history: "var(--s-other)",
+    duplicate: "var(--text-3)", same_policy: "var(--text-3)", batch_duplicate: "var(--text-3)", error: "var(--st-expired)",
+  };
+  const OUT_ORDER = ["new", "renewal", "history", "error", "duplicate", "same_policy", "batch_duplicate"];
+  S.imp = { batch: null, uploading: false, done: 0, total: 0, items: [], selected: new Set(), filter: "all", result: null, recent: null };
+
+  function renderImport() {
+    return `
+      <div id="imp-result"></div>
+      <div class="card">
+        <div class="card-b">
+          <div class="dropzone" id="dropzone">
+            <div class="dz-icon">${icon("upload", 24)}</div>
+            <h3>Drop policy PDFs or a whole folder here</h3>
+            <p>Each policy is read and matched to the register by chassis number. Nothing is saved until you review the results and choose Import.</p>
+            <div class="dz-actions">
+              <button class="btn primary" data-action="imp-pick-files">${icon("filePlus", 15)}Select files</button>
+              <button class="btn" data-action="imp-pick-folder">${icon("folder", 15)}Select folder</button>
+            </div>
+            <p style="margin-top:4px">PDF only, up to 30 MB each. Formats recognised: Royal Sundaram, ICICI Lombard, IFFCO-Tokio, Go Digit. Files stay on this computer.</p>
+            <input type="file" id="imp-files" accept="application/pdf,.pdf" multiple hidden>
+            <input type="file" id="imp-folder" webkitdirectory multiple hidden>
+          </div>
+        </div>
+      </div>
+      <div id="imp-region"></div>
+      <div class="card mt">
+        <div class="card-h"><div class="t"><h2>How matching works</h2><p>The chassis number decides whether a policy is new or belongs to a vehicle already in the register</p></div></div>
+        <div class="card-b"><div class="how">
+          <div class="step"><span class="n">1</span><div><b>New vehicle</b><span>The chassis number is not in the register yet, so the vehicle is added.</span></div></div>
+          <div class="step"><span class="n">2</span><div><b>Renewal</b><span>The vehicle exists and this policy ends later. It becomes the current policy, the old one moves to history, and its expiry alerts close.</span></div></div>
+          <div class="step"><span class="n">3</span><div><b>Skipped</b><span>Files already imported, a policy number already on record, or a PDF that cannot be read are never imported.</span></div></div>
+        </div></div>
+      </div>
+      <div class="card mt" id="imp-recent"></div>`;
+  }
+
+  function updateImport() {
+    const im = S.imp;
+    const res = $("#imp-result");
+    if (res) {
+      const r = im.result;
+      res.innerHTML = r ? `<div class="success-panel"><span class="s-icon">${icon("checkCircle", 22)}</span>
+        <div class="s-text"><b>${fmt(r.imported)} polic${r.imported === 1 ? "y" : "ies"} imported.</b>
+        <span class="sec">${Object.entries(r.by_outcome).map(([k, n]) => `${fmt(n)} ${({ new: "new vehicle", renewal: "renewal", history: "older policy" })[k]}${n === 1 ? "" : "s"}`).join(", ")}${r.skipped ? `. ${fmt(r.skipped)} skipped because they were already in the system.` : "."}</span></div>
+        <a class="btn sm" href="#/vehicles">Open vehicle register ${icon("chevronRight", 14)}</a></div>` : "";
+    }
+    const region = $("#imp-region");
+    if (!region) return;
+    if (im.uploading) {
+      region.innerHTML = `<div class="card mt"><div class="card-b">
+        <div class="progress-row"><span>Reading policies</span><span id="imp-count">${fmt(im.done)} of ${fmt(im.total)}</span></div>
+        <div class="progress"><span id="imp-bar" style="width:${im.total ? (im.done / im.total) * 100 : 0}%"></span></div></div></div>`;
+    } else if (im.items.length) {
+      region.innerHTML = importReview();
+    } else {
+      region.innerHTML = "";
+    }
+    renderRecent();
+  }
+
+  function importReview() {
+    const im = S.imp;
+    const counts = Object.fromEntries(OUT_ORDER.map((o) => [o, im.items.filter((i) => i.outcome === o).length]));
+    const label = (o) => im.items.find((i) => i.outcome === o)?.label || o;
+    const rows = im.items.filter((i) => im.filter === "all" || i.outcome === im.filter)
+      .sort((a, b) => OUT_ORDER.indexOf(a.outcome) - OUT_ORDER.indexOf(b.outcome) || a.name.localeCompare(b.name));
+    const importable = im.items.filter((i) => i.importable);
+    const sel = importable.filter((i) => im.selected.has(i.key)).length;
+    const visImportable = rows.filter((i) => i.importable);
+    const allOn = visImportable.length && visImportable.every((i) => im.selected.has(i.key));
+    const detail = (i) => {
+      const li = [];
+      if (i.outcome === "renewal" && i.current) li.push(`<li>Replaces current policy ${esc(i.current.policy_no)} ending ${dfmt(i.current.od_end)}</li>`);
+      if (i.outcome === "history" && i.current) li.push(`<li>Vehicle's current policy ends ${dfmt(i.current.od_end)}; this one is kept as history</li>`);
+      if (i.outcome === "duplicate") li.push(`<li>This exact file was imported before</li>`);
+      if (i.outcome === "same_policy") li.push(`<li>Policy ${esc(i.fields?.policy_no)} is already stored from another file</li>`);
+      if (i.outcome === "batch_duplicate") li.push(`<li>The same file appears twice in this upload</li>`);
+      (i.changes || []).forEach((c) => li.push(`<li>${esc(c)}</li>`));
+      (i.errors || []).forEach((e) => li.push(`<li class="err">${esc(e)}</li>`));
+      (i.warnings || []).forEach((w) => li.push(`<li class="warn">${esc(w)}</li>`));
+      return li.length ? `<ul class="detail-list">${li.join("")}</ul>` : `<span class="muted">—</span>`;
+    };
+    return `
+      <div class="card mt">
+        <div class="card-h"><div class="t"><h2>Review ${fmt(im.items.length)} file${im.items.length === 1 ? "" : "s"}</h2><p>Check the results, untick anything you do not want, then import</p></div></div>
+        <div class="card-b" style="padding-bottom:12px">
+          <div class="segmented"><button class="${im.filter === "all" ? "on" : ""}" data-imp-filter="all">All<span class="n">${im.items.length}</span></button>
+            ${OUT_ORDER.filter((o) => counts[o]).map((o) => `<button class="${im.filter === o ? "on" : ""}" data-imp-filter="${o}"><i class="sw" style="background:${OUT_STYLE[o]};border-radius:50%"></i>${esc(label(o))}<span class="n">${counts[o]}</span></button>`).join("")}</div>
+        </div>
+        <div class="table-wrap" style="max-height:calc(100vh - 320px)">
+          <table class="data"><thead><tr>
+            <th style="width:34px"><input type="checkbox" class="chk" data-imp-all ${allOn ? "checked" : ""} ${visImportable.length ? "" : "disabled"} aria-label="Select all"></th>
+            <th>File</th><th>Result</th><th>Vehicle</th><th>Insurer / policy</th><th>Cover period</th><th>Details</th></tr></thead><tbody>
+          ${rows.map((i) => `<tr style="cursor:default">
+            <td><input type="checkbox" class="chk" data-imp-key="${esc(i.key)}" ${i.importable ? "" : "disabled"} ${i.importable && im.selected.has(i.key) ? "checked" : ""} aria-label="Import ${esc(i.name)}"></td>
+            <td style="max-width:240px"><div class="cell-main" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(i.name)}">${esc(i.name.split("/").pop())}</div>${i.name.includes("/") ? `<div class="cell-sub" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(i.name.split("/").slice(0, -1).join("/"))}</div>` : ""}</td>
+            <td><span class="pill" style="--c:${OUT_STYLE[i.outcome]}">${esc(i.label)}</span></td>
+            <td>${i.fields?.chassis_no ? `<div class="cell-main">${esc(i.fields.registration_no || "Not registered")}</div><div class="cell-sub mono">${esc(i.fields.chassis_no)}</div>` : `<span class="muted">—</span>`}</td>
+            <td>${i.fields?.insurer ? `<div>${esc(i.fields.insurer)}</div><div class="cell-sub mono">${esc(i.fields.policy_no || "")}</div>` : `<span class="muted">—</span>`}</td>
+            <td class="num nowrap">${i.fields?.od_end ? `${dfmt(i.fields.od_start)} –<br>${dfmt(i.fields.od_end)}` : `<span class="muted">—</span>`}</td>
+            <td style="min-width:220px">${detail(i)}</td></tr>`).join("")}
+          </tbody></table>
+        </div>
+        <div class="table-foot">
+          <span>${fmt(sel)} of ${fmt(importable.length)} importable file${importable.length === 1 ? "" : "s"} selected</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn sm ghost" data-action="imp-discard">Discard</button>
+            <button class="btn sm primary" data-action="imp-commit" ${sel ? "" : "disabled"}>${icon("check", 14)}Import ${fmt(sel)} polic${sel === 1 ? "y" : "ies"}</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  async function renderRecent() {
+    const el = $("#imp-recent");
+    if (!el) return;
+    if (S.imp.recent === null) {
+      try { S.imp.recent = await api("/api/import/recent"); } catch (e) { S.imp.recent = []; }
+    }
+    const rows = S.imp.recent;
+    const lbl = { new: "New vehicle", renewal: "Renewal", history: "Older policy" };
+    el.innerHTML = `<div class="card-h"><div class="t"><h2>Recent imports</h2><p>Policies added through this page</p></div></div>
+      <div class="card-b flush">${rows.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Imported</th><th>File</th><th>Result</th><th>Vehicle</th><th>Insurer</th><th>Cover to</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr ${r.policy_id ? `data-open="${r.policy_id}"` : 'style="cursor:default"'}>
+        <td class="nowrap num">${new Date(r.imported_at).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+        <td>${esc(r.file_name.split("/").pop())}</td>
+        <td><span class="pill" style="--c:${OUT_STYLE[r.outcome] || "var(--text-3)"}">${lbl[r.outcome] || esc(r.outcome)}</span></td>
+        <td><div class="cell-main">${esc(r.registration_no || "Not registered")}</div><div class="cell-sub mono">${esc(r.chassis_no || "")}</div></td>
+        <td>${esc(r.insurer || "")}</td><td class="num nowrap">${dfmt(r.od_end)}</td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty-state">${icon("inbox", 26)}<b>No policies imported yet</b><span>Policies you import here will be listed with their result.</span></div>`}</div>`;
+  }
+
+  async function filesFromDrop(dt) {
+    const entries = [...(dt.items || [])].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+    if (!entries.length) return [...dt.files];
+    const out = [];
+    const walk = async (entry, path) => {
+      if (entry.isFile) {
+        const f = await new Promise((res, rej) => entry.file(res, rej));
+        out.push({ file: f, path: path + f.name });
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        let batch;
+        do {
+          batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+          for (const e of batch) await walk(e, path + entry.name + "/");
+        } while (batch.length);
+      }
+    };
+    for (const e of entries) await walk(e, "");
+    return out;
+  }
+
+  async function uploadFiles(list) {
+    const files = list.map((x) => (x.file ? x : { file: x, path: x.webkitRelativePath || x.name }))
+      .filter((x) => /\.pdf$/i.test(x.file.name));
+    if (!files.length) { toast("No PDF files found in the selection"); return; }
+    const im = S.imp;
+    if (im.uploading) { toast("Please wait for the current upload to finish"); return; }
+    if (!im.batch) im.batch = crypto.randomUUID ? crypto.randomUUID() : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (Math.random() * 16) >> c / 4).toString(16));
+    Object.assign(im, { uploading: true, total: im.total + files.length, result: null, filter: "all" });
+    updateImport();
+    let next = 0;
+    const worker = async () => {
+      while (next < files.length) {
+        const x = files[next++];
+        try {
+          await fetch(`/api/import/upload?batch=${im.batch}&name=${encodeURIComponent(x.path)}`, { method: "POST", headers: { "Content-Type": "application/pdf" }, body: x.file });
+        } catch (e) { /* the file is reported as missing below */ }
+        im.done++;
+        const bar = $("#imp-bar"), cnt = $("#imp-count");
+        if (bar) bar.style.width = `${(im.done / im.total) * 100}%`;
+        if (cnt) cnt.textContent = `${fmt(im.done)} of ${fmt(im.total)}`;
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    const prevSel = new Set(im.selected), prevKeys = new Set(im.items.map((i) => i.key));
+    try { im.items = (await api(`/api/import/batch/${im.batch}`)).items; } catch (e) { toast("Could not read results: " + e.message); }
+    im.selected = new Set(im.items.filter((i) => i.importable && (prevSel.has(i.key) || !prevKeys.has(i.key))).map((i) => i.key));
+    im.uploading = false;
+    updateImport();
+  }
+
+  async function commitImport() {
+    const im = S.imp;
+    const keys = [...im.selected];
+    if (!keys.length) return;
+    const btn = $('[data-action="imp-commit"]');
+    if (btn) { btn.disabled = true; btn.textContent = "Importing…"; }
+    try {
+      im.result = await api("/api/import/commit", { batch: im.batch, keys });
+    } catch (e) { toast("Import failed: " + e.message); if (btn) btn.disabled = false; return; }
+    Object.assign(im, { batch: null, items: [], selected: new Set(), done: 0, total: 0, recent: null });
+    await load();
+    renderShell();
+    updateImport();
+    toast(`${fmt(im.result.imported)} polic${im.result.imported === 1 ? "y" : "ies"} imported`);
+  }
+
+  async function discardImport() {
+    const im = S.imp;
+    if (im.batch) { try { await api("/api/import/discard", { batch: im.batch }); } catch (e) { /* staged files are cleared on restart anyway */ } }
+    Object.assign(im, { batch: null, items: [], selected: new Set(), done: 0, total: 0, result: null });
+    updateImport();
+  }
+
   /* ---------------------------------------------------------------- drawer */
   async function openDrawer(id) {
     const v = S.byId.get(Number(id));
@@ -819,7 +1033,14 @@
       const pg = t.closest("[data-page]");
       if (pg && !pg.disabled) { S.f.vehicles.page += Number(pg.dataset.page); updateVehicles(); $("#vh-region .table-wrap").scrollTop = 0; return; }
 
+      const impf = t.closest("[data-imp-filter]");
+      if (impf) { S.imp.filter = impf.dataset.impFilter; updateImport(); return; }
+
       const act = t.closest("[data-action]")?.dataset.action;
+      if (act === "imp-pick-files") return $("#imp-files").click();
+      if (act === "imp-pick-folder") return $("#imp-folder").click();
+      if (act === "imp-commit") return commitImport();
+      if (act === "imp-discard") return discardImport();
       if (act === "close-drawer") return closeDrawer();
       if (act === "read-all") return markRead(alerts().map((a) => a.key));
       if (act === "read-visible") { markRead(S.visibleAlertKeys || []); updateRenewals(); return; }
@@ -864,6 +1085,16 @@
         if (page === "renewals") updateRenewals();
         if (page === "analytics") updateAnalytics();
       }
+      if (t.id === "imp-files" || t.id === "imp-folder") { uploadFiles([...t.files]); t.value = ""; return; }
+      if (t.dataset.impKey !== undefined) {
+        t.checked ? S.imp.selected.add(t.dataset.impKey) : S.imp.selected.delete(t.dataset.impKey);
+        updateImport(); return;
+      }
+      if (t.dataset.impAll !== undefined) {
+        const vis = S.imp.items.filter((i) => i.importable && (S.imp.filter === "all" || i.outcome === S.imp.filter));
+        vis.forEach((i) => (t.checked ? S.imp.selected.add(i.key) : S.imp.selected.delete(i.key)));
+        updateImport(); return;
+      }
       if (t.dataset.renewal) {
         const v = S.byId.get(Number(t.dataset.renewal));
         saveRenewal(t.dataset.renewal, t.value, v?.renewal?.note || "");
@@ -895,6 +1126,19 @@
     document.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("#search-input").focus(); $("#search-input").select(); }
       if (e.key === "Escape") { closeDrawer(); $("#notif-panel").hidden = true; }
+    });
+
+    // drag and drop (files or folders) onto the import drop zone; never let the browser open a dropped PDF
+    document.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      $("#dropzone")?.classList.toggle("over", !!e.target.closest?.("#dropzone"));
+    });
+    document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) $("#dropzone")?.classList.remove("over"); });
+    document.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      $("#dropzone")?.classList.remove("over");
+      if (!e.target.closest?.("#dropzone")) { if (S.route !== "import" && e.dataTransfer?.files?.length) toast("Open Add policies to upload PDFs"); return; }
+      uploadFiles(await filesFromDrop(e.dataTransfer));
     });
 
     window.addEventListener("hashchange", navigate);
