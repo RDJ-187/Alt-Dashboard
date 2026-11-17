@@ -1,0 +1,22 @@
+# ---- private data: never commit (policy PDFs, extracted records, personal details) ----
+OneDrive_*/
+*.zip
+*.pdf
+*.xlsx
+insurance-tracker/data/
+*.db
+*.sqlite*
+*.log
+
+# ---- environment / build ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+node_modules/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

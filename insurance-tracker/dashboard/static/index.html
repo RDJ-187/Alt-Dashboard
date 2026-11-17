@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Policy Tracker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c5cab'/%3E%3Cpath d='M16 7l7 3v5.5c0 4.6-3 8.3-7 9.5-4-1.2-7-4.9-7-9.5V10z' fill='none' stroke='%23fff' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<script>
+  try { const t = localStorage.getItem("pt-theme"); if (t) document.documentElement.dataset.theme = t;
+        if (localStorage.getItem("pt-nav") === "collapsed" || /[?&]nav=collapsed/.test(location.search)) document.documentElement.classList.add("nav-collapsed"); } catch (e) {}
+</script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.6-3 8.3-7 9.5-4-1.2-7-4.9-7-9.5V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-name">Policy Tracker</div>
+        <div class="brand-sub">Fleet motor insurance</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="menu-btn" aria-label="Toggle navigation" title="Collapse or expand navigation"></button>
+      <div class="page-title">
+        <h1 id="page-title">Overview</h1>
+        <div class="page-sub" id="page-sub"></div>
+      </div>
+      <div class="search" id="search">
+        <span class="search-icon" aria-hidden="true"></span>
+        <input id="search-input" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search registration, chassis or policy no." aria-label="Search vehicles">
+        <kbd>Ctrl K</kbd>
+        <div class="search-results" id="search-results" role="listbox"></div>
+      </div>
+      <div class="asof" id="asof" title="Expiry status is calculated against this date"></div>
+      <button class="icon-btn" id="theme-btn" aria-label="Toggle colour theme"></button>
+      <div class="bell-wrap">
+        <button class="icon-btn" id="bell-btn" aria-label="Notifications" aria-haspopup="true"></button>
+        <div class="notif-panel" id="notif-panel" hidden></div>
+      </div>
+    </header>
+    <main class="content" id="view" tabindex="-1">
+      <div class="loading">Loading policy data</div>
+    </main>
+  </div>
+</div>
+
+<div class="drawer-scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true" role="dialog" aria-label="Vehicle details"></aside>
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<div class="toast-stack" id="toasts" aria-live="polite"></div>
+
+<script src="icons.js"></script>
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
