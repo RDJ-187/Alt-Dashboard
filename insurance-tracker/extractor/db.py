@@ -5,8 +5,6 @@ Tables
   field_checks      per-field audit trail: rules value, LLM value, verdict
   issues            validation warnings / errors per policy
   duplicates        byte-identical PDF copies that were skipped
-  renewal_tracking  dashboard: admin's renewal status / note per vehicle and policy term
-  alert_reads       dashboard: which expiry alerts have been read
   import_log        dashboard: every policy imported through the upload page
 View
   vehicles          latest policy per chassis number (what the tracker shows)
@@ -93,13 +91,6 @@ CREATE TABLE IF NOT EXISTS duplicates (
   file TEXT PRIMARY KEY, sha256 TEXT NOT NULL, duplicate_of TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS renewal_tracking (
-  chassis_no TEXT PRIMARY KEY, od_end DATE, status TEXT NOT NULL,
-  note TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS alert_reads (
-  key TEXT PRIMARY KEY, read_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 CREATE TABLE IF NOT EXISTS import_log (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   batch TEXT NOT NULL, file_name TEXT NOT NULL, sha256 TEXT, outcome TEXT NOT NULL,

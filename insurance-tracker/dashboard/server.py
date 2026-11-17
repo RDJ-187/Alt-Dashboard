@@ -3,7 +3,7 @@
   python dashboard/server.py [--port 8050] [--asof YYYY-MM-DD]
 
 Reads   policies / vehicles / field_checks / issues      (extraction output)
-Writes  renewal_tracking / alert_reads                   (dashboard state; never touched by re-extraction)
+Writes  import_log                                      (upload history; never touched by re-extraction)
 Serves  dashboard/static/*                               (single-page app)
 Connection: DATABASE_URL from the environment or insurance-tracker/.env
 """
@@ -30,7 +30,6 @@ import ingest  # noqa: E402
 STATIC = Path(__file__).resolve().parent / "static"
 PDF_ROOT = Path(os.environ.get("INS_PDF_ROOT", ROOT.parent / "OneDrive_2026-11-14" / "HR Assignment")).resolve()
 
-RENEWAL_STATES = {"not_started", "in_progress", "renewed", "lapsed"}
 
 LIST_COLUMNS = [
     "id", "status", "insurer", "policy_no", "policy_type", "od_start", "od_end", "tp_end",
@@ -65,14 +64,8 @@ def api_vehicles(_q) -> dict:
         meta = con.execute("SELECT MAX(extracted_at) AS updated, COUNT(*) AS n, "
                            "COUNT(llm_agreement) AS llm FROM policies").fetchone()
         dupes = con.execute("SELECT COUNT(*) AS n FROM duplicates").fetchone()["n"]
-        tracking = {r["chassis_no"]: r for r in con.execute("SELECT * FROM renewal_tracking")}
-        reads = [r["key"] for r in con.execute("SELECT key FROM alert_reads")]
-    for r in rows:
-        t = tracking.get(r["chassis_no"])
-        # a manual mark applies only to the policy term it was made for; a newer policy resets it
-        r["renewal"] = t if t and t["od_end"] == r["od_end"] else None
     return {"asof": today().isoformat(), "updated": meta["updated"], "policies": meta["n"], "llm_checked": meta["llm"],
-            "duplicates": dupes, "vehicles": rows, "alert_reads": reads}
+            "duplicates": dupes, "vehicles": rows}
 
 
 def api_vehicle(pid: int) -> dict | None:
@@ -84,10 +77,6 @@ def api_vehicle(pid: int) -> dict | None:
             "SELECT id, policy_no, insurer, od_start, od_end FROM policies WHERE chassis_no = %s AND id <> %s "
             "ORDER BY od_end DESC", (rec["chassis_no"], pid)).fetchall()
         rec["issues"] = con.execute("SELECT severity, field, message FROM issues WHERE policy_id = %s", (pid,)).fetchall()
-        rec["checks"] = con.execute(
-            "SELECT field, rules_value, llm_value, verdict FROM field_checks WHERE policy_id = %s", (pid,)).fetchall()
-        t = con.execute("SELECT * FROM renewal_tracking WHERE chassis_no = %s", (rec["chassis_no"],)).fetchone()
-    rec["renewal"] = t if t and t["od_end"] == rec["od_end"] else None
     rec["has_pdf"] = _pdf_path(rec["file"]) is not None
     return rec
 
@@ -183,30 +172,6 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "import", "discard"]:
                 ingest.discard(str(body.get("batch", "")))
                 return self._json({"ok": True})
-            now = datetime.now().astimezone()
-            if parts == ["api", "alerts", "read"]:
-                keys = [str(k)[:200] for k in body.get("keys", [])][:5000]
-                with conn() as con, con.cursor() as cur:
-                    cur.executemany("INSERT INTO alert_reads (key, read_at) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
-                                    [(k, now) for k in keys])
-                return self._json({"ok": True, "marked": len(keys)})
-            if parts == ["api", "renewal"]:
-                chassis = str(body.get("chassis_no") or "")[:40]
-                st = body.get("status")
-                if not chassis or st not in RENEWAL_STATES:
-                    return self._json({"error": "chassis_no and a valid status are required"}, 400)
-                note = (body.get("note") or "")[:1000]
-                od_end = date.fromisoformat(str(body["od_end"])[:10]) if body.get("od_end") else None
-                with conn() as con:
-                    if st == "not_started" and not note:
-                        con.execute("DELETE FROM renewal_tracking WHERE chassis_no = %s", (chassis,))
-                    else:
-                        con.execute("INSERT INTO renewal_tracking (chassis_no, od_end, status, note, updated_at) "
-                                    "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (chassis_no) DO UPDATE SET "
-                                    "od_end = EXCLUDED.od_end, status = EXCLUDED.status, note = EXCLUDED.note, "
-                                    "updated_at = EXCLUDED.updated_at", (chassis, od_end, st, note, now))
-                return self._json({"ok": True, "chassis_no": chassis, "od_end": od_end, "status": st,
-                                   "note": note, "updated_at": now})
             return self._json({"error": "not found"}, 404)
         except Exception as ex:  # noqa: BLE001
             return self._json({"error": str(ex)}, 400)

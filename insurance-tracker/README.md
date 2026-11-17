@@ -82,16 +82,17 @@ Opens http://127.0.0.1:8050 (bound to localhost only; no internet access needed,
 
 | Screen | What it shows |
 |---|---|
-| Overview | KPI tiles, expiry timeline, status and insurer split, next expiries, fire / chassis-damage coverage, renewal progress |
-| Renewals & alerts | Expired / 0–7 / 8–30 / 31–60 day queues, per-policy renewal status (Not started, In progress, Renewed, Lapsed) |
+| Overview | KPI tiles, expiry timeline, status and insurer split, next expiries, fire / chassis-damage coverage |
+| Expiry alerts | Expired / 0–7 / 8–30 / 31–60 day queues |
 | Vehicle register | Searchable, filterable, sortable list of all vehicles; CSV export |
-| Analytics | Expiries by month, expiry calendar, 12-week workload, start dates, city / brand / state / insurer breakdowns |
-| Add policies | Upload PDFs or a whole folder; each is extracted and classified (new vehicle, renewal, older policy, already in system, same policy number, needs attention); nothing is saved until you confirm; imported PDFs are kept in `data/uploads/<date>/` and listed under Recent imports |
-| Vehicle panel | Policy period, fire and chassis-damage cover with covered causes, vehicle and finance details, original PDF, verification trail |
+| Analytics | Expiries by month, expiry calendar, 12-week workload, city / brand / insurer breakdowns |
+| Add policies | Upload PDFs or a whole folder; each is extracted and classified (new vehicle, newer policy, older policy, already in system, same policy number, needs attention); nothing is saved until you confirm; imported PDFs are kept in `data/uploads/<date>/` and listed under Recent imports |
+| Vehicle panel | Policy period, fire and chassis-damage cover with covered causes, vehicle and finance details, original PDF, Verified / Needs review tag |
 
-Notifications are in-app (bell). Status is computed live from the OD end date. Renewal tracking and read state
-live in their own tables (`renewal_tracking`, `alert_reads`) that re-extraction never touches;
-a manual "Renewed" mark applies only to the policy term it was set on.
+Notifications are in-app (bell). Status is computed live from whichever cover ends first: own-damage or
+third-party (third-party is the legally required cover). An alert stays open until
+a newer policy PDF for the vehicle is added on the Add policies page, which makes that policy current and closes
+the old policy's alerts.
 
 ## Database (PostgreSQL 17 in Docker)
 
@@ -106,7 +107,7 @@ python run_pipeline.py --root "<pdf folder>"
 | `policies` | one row per unique PDF; typed columns (DATE, NUMERIC, JSONB, TIMESTAMPTZ) |
 | `field_checks`, `issues` | per-field rules-vs-LLM audit trail, validation findings |
 | `duplicates` | byte-identical PDFs that were skipped |
-| `renewal_tracking`, `alert_reads` | dashboard state |
+| `import_log` | upload history |
 | `vehicles` (view) | latest policy per chassis number |
 
 The connection string is `DATABASE_URL` (environment variable or `.env`). The schema is created automatically.

@@ -6,7 +6,7 @@ Flow
   3. import   selected files are re-checked against the live database, saved, and the PDF is
               moved to data/uploads/<date>/ so the dashboard can open it later
 
-A renewal needs no special handling in the database: the `vehicles` view always shows the policy
+A newer policy needs no special handling in the database: the `vehicles` view always shows the policy
 with the latest OD end date per chassis, so the new policy becomes current, the old one stays as
 history, and expiry alerts keyed on the old end date close by themselves.
 """
@@ -32,7 +32,7 @@ BATCH_RX = re.compile(r"^[0-9a-f-]{36}$")
 # outcome -> (label, importable)
 OUTCOMES = {
     "new": ("New vehicle", True),
-    "renewal": ("Renewal", True),
+    "newer": ("Newer policy", True),
     "history": ("Older policy", True),
     "duplicate": ("Already in system", False),
     "same_policy": ("Same policy number", False),
@@ -94,7 +94,7 @@ def _classify(con, rec: dict) -> dict:
         if new_reg and new_reg != old_reg:
             res["changes"].append(f"Registration added: {new_reg}" if not old_reg
                                   else f"Registration changes from {old_reg} to {new_reg}")
-        return {**res, "outcome": "renewal"}
+        return {**res, "outcome": "newer"}
     return {**res, "outcome": "history"}
 
 
@@ -142,7 +142,7 @@ def _relabel(items: list[dict]) -> None:
     """Several policies for one chassis in the same upload: only the latest can be the current one."""
     by_chassis: dict[str, list[dict]] = {}
     for it in items:
-        if it["outcome"] in ("new", "renewal", "history"):
+        if it["outcome"] in ("new", "newer", "history"):
             by_chassis.setdefault(it["fields"]["chassis_no"], []).append(it)
     for group in by_chassis.values():
         if len(group) < 2:

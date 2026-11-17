@@ -21,7 +21,6 @@ sys.path.insert(0, str(ROOT))
 from extractor import db  # noqa: E402
 
 SRC = ROOT / "data" / "insurance.db"
-SRC_STATE = ROOT / "data" / "dashboard_state.db"
 
 
 def lite(path: Path) -> sqlite3.Connection:
@@ -61,16 +60,11 @@ def main() -> int:
     checks = [dict(r) for r in src.execute("SELECT * FROM field_checks")]
     issues = [dict(r) for r in src.execute("SELECT * FROM issues")]
     dupes = [dict(r) for r in src.execute("SELECT * FROM duplicates")]
-    tracking, reads = [], []
-    if SRC_STATE.exists():
-        st = lite(SRC_STATE)
-        tracking = [dict(r) for r in st.execute("SELECT * FROM renewal_tracking")]
-        reads = [dict(r) for r in st.execute("SELECT * FROM alert_reads")]
 
     cols = ["id"] + db.POLICY_COLUMNS
     with pg.transaction():
         if a.replace:
-            pg.execute("TRUNCATE policies, field_checks, issues, duplicates, renewal_tracking, alert_reads RESTART IDENTITY CASCADE")
+            pg.execute("TRUNCATE policies, field_checks, issues, duplicates RESTART IDENTITY CASCADE")
         with pg.cursor() as cur:
             cur.executemany(
                 f"INSERT INTO policies ({', '.join(cols)}) OVERRIDING SYSTEM VALUE VALUES ({', '.join(['%s'] * len(cols))})",
@@ -82,11 +76,6 @@ def main() -> int:
                             [(i["policy_id"], i["severity"], i["field"], i["message"]) for i in issues])
             cur.executemany("INSERT INTO duplicates (file, sha256, duplicate_of) VALUES (%s, %s, %s) ON CONFLICT (file) DO NOTHING",
                             [(d["file"], d["sha256"], d["duplicate_of"]) for d in dupes])
-            cur.executemany("INSERT INTO renewal_tracking VALUES (%s, %s, %s, %s, %s)",
-                            [(t["chassis_no"], db.to_db("od_end", t.get("od_end")), t["status"], t["note"],
-                              db.to_db("extracted_at", t["updated_at"]).astimezone()) for t in tracking])
-            cur.executemany("INSERT INTO alert_reads VALUES (%s, %s)",
-                            [(r["key"], db.to_db("extracted_at", r["read_at"]).astimezone()) for r in reads])
         pg.execute("SELECT setval(pg_get_serial_sequence('policies', 'id'), (SELECT COALESCE(MAX(id), 1) FROM policies))")
 
     pg.close()
@@ -96,8 +85,7 @@ def main() -> int:
     ok = True
     counts = {}
     for table, n_src in [("policies", len(policies)), ("field_checks", len(checks)), ("issues", len(issues)),
-                         ("duplicates", len({d['file'] for d in dupes})), ("renewal_tracking", len(tracking)),
-                         ("alert_reads", len(reads))]:
+                         ("duplicates", len({d['file'] for d in dupes}))]:
         n_pg = pg.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
         counts[table] = (n_src, n_pg)
         ok &= n_src == n_pg
